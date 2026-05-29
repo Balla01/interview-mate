@@ -7,7 +7,7 @@ load_dotenv()
 
 # Read API key
 api_key = os.getenv("groq_api")
-
+print('api_key', api_key)
 if not api_key:
     raise ValueError("groq_api not found in .env")
 

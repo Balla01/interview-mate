@@ -1,3 +1,4 @@
+import os
 import queue
 import threading
 import gradio as gr
@@ -11,7 +12,7 @@ SAMPLE_RATE = 16000
 # ---------------------------------------------------------------------------
 # Load API key from .env
 # ---------------------------------------------------------------------------
-def _load_env(path=".env"):
+def _load_env(path=os.path.join(os.path.dirname(__file__), "..", ".env")):
     env = {}
     with open(path) as f:
         for line in f:
@@ -102,7 +103,21 @@ def process(audio, state):
         }
 
     sr, data = audio
-    state["conn"].send_media(to_mono_int16(data, sr).tobytes())
+    try:
+        state["conn"].send_media(to_mono_int16(data, sr).tobytes())
+    except Exception:
+        # Connection dropped — reopen and continue
+        try:
+            state["conn_cm"].__exit__(None, None, None)
+        except Exception:
+            pass
+        conn, conn_cm, q_final, q_partial = open_connection()
+        state.update({"conn": conn, "conn_cm": conn_cm,
+                      "q_final": q_final, "q_partial": q_partial})
+        try:
+            state["conn"].send_media(to_mono_int16(data, sr).tobytes())
+        except Exception:
+            return state, state["display"]
 
     # Drain confirmed finals
     while not state["q_final"].empty():

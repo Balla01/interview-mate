@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>InterviewMate</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d0f14;--surface:#161922;--surface2:#1e222e;--border:#2a2f3d;
+  --accent:#6366f1;--accent2:#4f52cc;--green:#34d399;--red:#f87171;
+  --text:#e2e8f0;--muted:#64748b;--dim:#94a3b8;
+  --interviewer:#818cf8;--interviewee:#34d399;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;height:100vh;overflow:hidden;font-size:15px}
+#app{display:flex;flex-direction:column;height:100vh}
+
+header{display:flex;align-items:center;justify-content:space-between;padding:0 1.5rem;height:56px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;gap:1rem}
+.brand{display:flex;align-items:center;gap:.5rem;font-size:1.05rem;font-weight:700;white-space:nowrap}
+.controls{display:flex;align-items:center;gap:.65rem;flex-wrap:wrap}
+
+.mode-sel{display:flex;background:var(--surface2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.mode-btn{background:transparent;border:none;color:var(--dim);padding:.32rem .8rem;font-size:.82rem;font-weight:500;cursor:pointer;transition:background .15s,color .15s}
+.mode-btn:hover:not(:disabled){background:var(--border);color:var(--text)}
+.mode-btn.active{background:var(--accent);color:#fff}
+.mode-btn:disabled{opacity:.4;cursor:not-allowed}
+
+.status{display:flex;align-items:center;gap:.35rem;font-size:.75rem;color:var(--muted)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:background .3s}
+.dot.connected{background:var(--green)}.dot.connecting{background:#fbbf24}.dot.error{background:var(--red)}
+
+.btn{padding:.38rem .9rem;border:none;border-radius:8px;font-size:.83rem;font-weight:600;cursor:pointer;transition:opacity .15s,background .15s}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-start{background:var(--accent);color:#fff}.btn-start:hover:not(:disabled){background:var(--accent2)}
+.btn-stop{background:#7f1d1d;color:var(--red)}.btn-stop:hover{background:#991b1b}
+.btn-sys{background:var(--surface2);color:var(--dim);border:1px solid var(--border);font-size:.78rem}
+.btn-sys:hover:not(:disabled){background:var(--border)}.btn-sys.on{color:var(--green);border-color:var(--green)}
+.btn-speaker{font-size:.82rem;border:2px solid transparent;transition:background .2s,border-color .2s}
+.btn-speaker.interviewer-active{background:#312e81;border-color:var(--interviewer);color:var(--interviewer)}
+.btn-speaker.interviewer-active:hover{background:#3730a3}
+.btn-speaker.interviewee-active{background:#064e3b;border-color:var(--interviewee);color:var(--interviewee)}
+.btn-speaker.interviewee-active:hover{background:#065f46}
+.mic-live{font-size:.75rem;color:var(--red);animation:pulse 1.5s infinite}
+
+.warning{background:#451a03;border-bottom:1px solid #78350f;color:#fbbf24;font-size:.8rem;padding:.4rem 1.5rem;flex-shrink:0;display:none}
+
+/* Two-way hint banner */
+.hint-banner{background:var(--surface2);border-bottom:1px solid var(--border);color:var(--dim);font-size:.78rem;padding:.35rem 1.5rem;flex-shrink:0;display:none}
+
+main{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow:hidden}
+.panel{display:flex;flex-direction:column;border-right:1px solid var(--border);overflow:hidden}
+.panel:last-child{border-right:none}
+.panel-title{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:.8rem 1.2rem .6rem;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:.5rem}
+.panel-body{flex:1;overflow-y:auto;padding:.75rem 1rem}
+
+/* Transcript turns */
+.turn{padding:.55rem .8rem;border-radius:9px;background:var(--surface2);border-left:3px solid var(--border);margin-bottom:.5rem;position:relative}
+.turn.interviewer{border-color:var(--interviewer)}
+.turn.interviewee{border-color:var(--interviewee)}
+.turn.unassigned{border-color:#4b5563}
+.turn-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:.22rem}
+.turn-label{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.turn.interviewer .turn-label{color:var(--interviewer)}
+.turn.interviewee .turn-label{color:var(--interviewee)}
+.turn p{font-size:.9rem;line-height:1.55}
+.turn.partial{opacity:.5;font-style:italic;border-style:dashed}
+
+/* Assign buttons — shown in two-way mode */
+.assign-group{display:flex;gap:.3rem}
+.assign-btn{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-size:.65rem;padding:.15rem .45rem;cursor:pointer;white-space:nowrap;transition:background .12s,color .12s,border-color .12s}
+.assign-btn:hover{background:var(--border);color:var(--text)}
+.assign-btn.interviewer-btn:hover{border-color:var(--interviewer);color:var(--interviewer)}
+.assign-btn.interviewee-btn:hover{border-color:var(--interviewee);color:var(--interviewee)}
+
+/* Suggestion */
+.sug-content{font-size:.92rem;line-height:1.7}
+.sug-content strong{color:var(--accent)}
+.sug-content ul{padding-left:1.3rem;margin:.4rem 0}
+.sug-content li{color:var(--dim);margin:.2rem 0}
+.sug-content p{margin:.45rem 0}
+.cursor{color:var(--accent);animation:blink 1s step-start infinite}
+.hint{color:var(--muted);font-size:.85rem;font-style:italic;text-align:center;padding:1.5rem}
+.sdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-left:.4rem;vertical-align:middle;animation:pulse 1s infinite}
+
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes blink{50%{opacity:0}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">🎧 InterviewMate</div>
+    <div class="controls">
+      <div class="mode-sel">
+        <button class="mode-btn active" id="btn-oneway">One-way</button>
+        <button class="mode-btn" id="btn-twoway">Two-way</button>
+      </div>
+      <div class="status">
+        <span class="dot" id="dot"></span>
+        <span id="status-txt">disconnected</span>
+      </div>
+      <button class="btn btn-sys" id="btn-sys" style="display:none">🔊 Add System Audio</button>
+      <!-- Two-way speaker toggle — shown while session is running -->
+      <button class="btn btn-speaker interviewer-active" id="btn-speaker" style="display:none" title="Click when you start speaking">
+        🎙 Now Talking: <strong id="speaker-label">Interviewer</strong>
+      </button>
+      <span class="mic-live" id="mic-live" style="display:none">🎙 live</span>
+      <button class="btn btn-start" id="btn-main" disabled>● Start Listening</button>
+    </div>
+  </header>
+  <div class="warning" id="warning"></div>
+  <div class="hint-banner" id="hint-banner">
+    💡 <strong>Two-way mode:</strong> Click <strong>"Now Talking"</strong> in the header to switch who is speaking <em>before</em> each turn.
+    Default is <strong>Interviewer</strong>. Switch to <strong>You</strong> when you start answering, then switch back when the interviewer speaks again.
+  </div>
+  <main>
+    <section class="panel">
+      <div class="panel-title">Live Transcript</div>
+      <div class="panel-body" id="transcript">
+        <p class="hint">Transcript will appear here once listening starts…</p>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-title">AI Suggestions <span class="sdot" id="sdot" style="display:none"></span></div>
+      <div class="panel-body" id="suggestions">
+        <p class="hint">Suggestions will stream here when the interviewer asks a question…</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const WS_URL = 'ws://localhost:8000/ws'
+const SAMPLE_RATE = 16000
+const BUFFER_SIZE = 4096
+
+let ws = null
+let mode = 'one_way'
+let running = false
+let micCtx = null, sysCtx = null
+let suggestion = ''
+let partials = {}
+
+let activeSpeaker = 'interviewer'  // tracks who is currently speaking (two-way)
+
+const DISPLAY_NAMES = { interviewer: 'Interviewer', interviewee: 'You (Interviewee)' }
+
+const $ = id => document.getElementById(id)
+const btnOneway=$('btn-oneway'), btnTwoway=$('btn-twoway')
+const btnMain=$('btn-main'), btnSys=$('btn-sys'), btnSpeaker=$('btn-speaker')
+const speakerLabel=$('speaker-label')
+const dot=$('dot'), statusTxt=$('status-txt')
+const transcriptEl=$('transcript'), suggestionsEl=$('suggestions')
+const micLive=$('mic-live'), sdot=$('sdot'), warningEl=$('warning')
+const hintBanner=$('hint-banner')
+
+// ── Mode ─────────────────────────────────────────────────
+btnOneway.onclick = () => { if (!running) { mode='one_way'; updateModeUI() } }
+btnTwoway.onclick = () => { if (!running) { mode='two_way'; updateModeUI() } }
+function updateModeUI() {
+  btnOneway.classList.toggle('active', mode==='one_way')
+  btnTwoway.classList.toggle('active', mode==='two_way')
+}
+
+// ── WebSocket ─────────────────────────────────────────────
+function connectWS() {
+  setStatus('connecting')
+  ws = new WebSocket(WS_URL)
+  ws.onopen  = () => { setStatus('connected'); btnMain.disabled = false }
+  ws.onerror = () => setStatus('error')
+  ws.onclose = () => { setStatus('disconnected'); btnMain.disabled = true; setTimeout(connectWS, 3000) }
+  ws.onmessage = onMessage
+}
+function setStatus(s) { dot.className='dot '+s; statusTxt.textContent=s }
+function sendJSON(obj) { if (ws?.readyState===1) ws.send(JSON.stringify(obj)) }
+function sendBin(buf)  { if (ws?.readyState===1) ws.send(buf) }
+
+// ── Message handling ─────────────────────────────────────
+function onMessage(e) {
+  const msg = JSON.parse(e.data)
+
+  if (msg.type === 'session_started') {
+    transcriptEl.innerHTML = ''
+    suggestionsEl.innerHTML = ''
+    suggestion = ''
+    partials = {}
+    activeSpeaker = 'interviewer'
+    btnSys.style.display = (mode==='one_way') ? 'inline-block' : 'none'
+    btnSys.textContent = '🔊 Add System Audio'
+    btnSys.disabled = false
+    btnSys.classList.remove('on')
+    // Show speaker toggle only in two-way mode
+    btnSpeaker.style.display = (mode==='two_way') ? 'inline-flex' : 'none'
+    updateSpeakerBtn('interviewer')
+    hintBanner.style.display = (mode==='two_way') ? 'block' : 'none'
+    warn('')
+  }
+
+  else if (msg.type === 'session_stopped') {
+    running = false
+    btnMain.textContent = '● Start Listening'
+    btnMain.className = 'btn btn-start'
+    btnSys.style.display = 'none'
+    btnSpeaker.style.display = 'none'
+    micLive.style.display = 'none'
+    hintBanner.style.display = 'none'
+    stopAudio()
+  }
+
+  else if (msg.type === 'transcript_update') {
+    renderTranscript(msg.speaker, msg.text, msg.is_final)
+  }
+
+  else if (msg.type === 'speaker_switched') {
+    activeSpeaker = msg.active
+    updateSpeakerBtn(msg.active)
+  }
+
+  else if (msg.type === 'llm_suggestion_update') {
+    if (msg.reset) {
+      suggestion = ''
+      suggestionsEl.innerHTML = '<div id="sw" class="sug-content"></div>'
+      sdot.style.display = 'inline-block'
+    } else if (msg.done) {
+      sdot.style.display = 'none'
+      const sw = $('sw')
+      if (sw) sw.innerHTML = md(suggestion)
+    } else {
+      suggestion += msg.text
+      const sw = $('sw')
+      if (sw) {
+        sw.innerHTML = md(suggestion) + '<span class="cursor">▌</span>'
+        suggestionsEl.scrollTop = suggestionsEl.scrollHeight
+      }
+    }
+  }
+}
+
+// ── Speaker toggle ────────────────────────────────────────
+function updateSpeakerBtn(active) {
+  const isInterviewer = active === 'interviewer'
+  btnSpeaker.className = 'btn btn-speaker ' + (isInterviewer ? 'interviewer-active' : 'interviewee-active')
+  speakerLabel.textContent = isInterviewer ? 'Interviewer' : 'You'
+  btnSpeaker.title = isInterviewer
+    ? 'Click when YOU start speaking'
+    : 'Click when INTERVIEWER starts speaking'
+}
+
+btnSpeaker.onclick = () => {
+  sendJSON({ type: 'switch_speaker' })
+  // Optimistic update — backend confirms via speaker_switched event
+  const next = activeSpeaker === 'interviewer' ? 'interviewee' : 'interviewer'
+  activeSpeaker = next
+  updateSpeakerBtn(next)
+}
+
+// ── Transcript rendering ─────────────────────────────────
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+
+function renderTranscript(speaker, text, isFinal) {
+  const pid = 'partial-' + speaker
+
+  if (isFinal) {
+    document.getElementById(pid)?.remove()
+    delete partials[speaker]
+    const d = document.createElement('div')
+    d.className = 'turn ' + speaker
+    d.innerHTML = `<div class="turn-header"><span class="turn-label">${DISPLAY_NAMES[speaker] || speaker}</span></div><p>${esc(text)}</p>`
+    transcriptEl.appendChild(d)
+  } else {
+    partials[speaker] = text
+    let el = document.getElementById(pid)
+    if (!el) {
+      el = document.createElement('div')
+      el.id = pid
+      el.className = 'turn ' + speaker + ' partial'
+      transcriptEl.appendChild(el)
+    }
+    el.innerHTML = `<div class="turn-header"><span class="turn-label">${DISPLAY_NAMES[speaker] || speaker}</span></div><p>${esc(text)}</p>`
+  }
+  transcriptEl.scrollTop = transcriptEl.scrollHeight
+}
+
+// ── Markdown renderer ─────────────────────────────────────
+function md(raw) {
+  return raw
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/^#{1,3} (.+)$/gm,'<strong>$1</strong>')
+    .replace(/^- (.+)$/gm,'<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, s => `<ul>${s}</ul>`)
+    .replace(/\n{2,}/g,'</p><p>')
+    .replace(/\n/g,'<br>')
+    .replace(/^/,'<p>') + '</p>'
+}
+
+// ── Audio ─────────────────────────────────────────────────
+function buildProcessor(stream, channel) {
+  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE })
+  const src = ctx.createMediaStreamSource(stream)
+  const proc = ctx.createScriptProcessor(BUFFER_SIZE, 1, 1)
+  proc.onaudioprocess = (e) => {
+    const f = e.inputBuffer.getChannelData(0)
+    const i16 = new Int16Array(f.length)
+    for (let i=0; i<f.length; i++) i16[i] = Math.max(-32768, Math.min(32767, f[i]*32768))
+    const out = new Uint8Array(1 + i16.byteLength)
+    out[0] = channel
+    out.set(new Uint8Array(i16.buffer), 1)
+    sendBin(out.buffer)
+  }
+  src.connect(proc); proc.connect(ctx.destination)
+  return { ctx, proc, src, stream }
+}
+
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+  })
+  micCtx = buildProcessor(stream, 0)
+  micLive.style.display = 'inline'
+}
+
+btnSys.onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: { width:1, height:1 } })
+    stream.getVideoTracks().forEach(t => t.stop())
+    const tracks = stream.getAudioTracks()
+    if (!tracks.length) { warn('No audio captured — check "Share audio" in the browser prompt.'); return }
+    sysCtx = buildProcessor(new MediaStream(tracks), 1)
+    btnSys.textContent = '🔊 System On'; btnSys.disabled = true; btnSys.classList.add('on')
+    tracks[0].addEventListener('ended', () => {
+      sysCtx?.ctx?.close(); sysCtx = null
+      btnSys.textContent='🔊 Add System Audio'; btnSys.disabled=false; btnSys.classList.remove('on')
+    })
+  } catch(err) { warn('System audio: ' + err.message) }
+}
+
+function stopAudio() {
+  [micCtx, sysCtx].forEach(c => {
+    if (!c) return
+    try { c.proc.disconnect(); c.ctx.close(); c.stream.getTracks().forEach(t=>t.stop()) } catch(_){}
+  })
+  micCtx = sysCtx = null
+}
+
+function warn(msg) { warningEl.textContent=msg; warningEl.style.display=msg?'block':'none' }
+
+// ── Start / Stop ──────────────────────────────────────────
+btnMain.onclick = async () => {
+  if (running) {
+    sendJSON({ type: 'stop_session' })
+    running = false
+    btnMain.textContent = '● Start Listening'; btnMain.className = 'btn btn-start'
+    micLive.style.display = 'none'; btnSys.style.display = 'none'
+    hintBanner.style.display = 'none'
+    stopAudio(); return
+  }
+
+  try {
+    btnMain.disabled = true; btnMain.textContent = 'Starting…'
+    if (ws?.readyState !== 1) {
+      await new Promise((res, rej) => {
+        ws = new WebSocket(WS_URL)
+        ws.onopen  = () => { setStatus('connected'); res() }
+        ws.onerror = () => rej(new Error('Cannot reach backend at ' + WS_URL))
+        ws.onclose = () => setStatus('disconnected')
+        ws.onmessage = onMessage
+      })
+    }
+    sendJSON({ type: 'start_session', mode })
+    await startMic()
+    running = true
+    btnMain.textContent = '■ Stop Listening'; btnMain.className = 'btn btn-stop'
+    btnMain.disabled = false
+  } catch(err) {
+    warn(err.message)
+    btnMain.textContent = '● Start Listening'; btnMain.className = 'btn btn-start'
+    btnMain.disabled = false
+  }
+}
+
+connectWS()
+</script>
+</body>
+</html>

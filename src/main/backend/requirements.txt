@@ -1,0 +1,9 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-dotenv
+groq
+deepgram-sdk>=7.0.0
+sounddevice
+numpy
+webrtcvad
+pyaudiowpatch; sys_platform == "win32"
