@@ -1,30 +1,64 @@
 import asyncio
+import time
 import threading
+from enum import Enum
 from typing import Optional
 
 from fastapi import WebSocket
 
+from .config import (
+    COOLDOWN_DURATION,
+    FALLBACK_TIMEOUT,
+    INTENT_CHECK_INTERVAL,
+    MIN_WORDS_FOR_INTENT,
+    SPEECH_GAP_TRIGGER,
+)
 from .context.manager import ConversationContext
+from .debug_logger import SessionLogger
+from .llm.domain import extract_domain_context
 from .llm.groq import stream_tokens
+from .llm.intent import detect_intent
+from .llm.rephrase import rephrase_question
 from .stt.deepgram import DeepgramStream
+
+
+class _State(Enum):
+    COLLECTING = "collecting"
+    PROCESSING = "processing"
+    COOLDOWN   = "cooldown"
+
 
 class InterviewSession:
     def __init__(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop):
-        self._ws = websocket
-        self._loop = loop
+        self._ws     = websocket
+        self._loop   = loop
         self._context = ConversationContext()
-        self._mode = "one_way"
+        self._mode   = "one_way"
         self._running = False
 
-        # Deepgram streams
         self._mic_stream: Optional[DeepgramStream] = None
         self._sys_stream: Optional[DeepgramStream] = None
 
-        # LLM suggestion task
-        self._llm_task: Optional[asyncio.Task] = None
-
-        # Two-way: user manually toggles who is speaking
         self._active_speaker: str = "interviewer"
+
+        # Debug logger (created fresh on each start)
+        self._log: Optional[SessionLogger] = None
+
+        # Domain/skill context (set once at session start)
+        self._domain_context: str = ""
+
+        # Pipeline
+        self._state               = _State.COLLECTING
+        self._interviewer_buffer  = ""
+        self._buffer_start_at: float = 0.0   # when buffer first got content
+        self._last_final_at:   float = 0.0   # time of last interviewer final transcript
+        self._last_intent_at:  float = 0.0   # time of last intent check
+
+        self._pipeline_task: Optional[asyncio.Task] = None
+
+    # ──────────────────────────────────────────────────────────────────
+    # Public API
+    # ──────────────────────────────────────────────────────────────────
 
     def switch_speaker(self) -> str:
         self._active_speaker = (
@@ -32,74 +66,54 @@ class InterviewSession:
         )
         return self._active_speaker
 
-    def _normalize_speaker(self, label: str) -> str:
-        return label if label in ("interviewer", "interviewee") else "interviewee"
-
-    # ------------------------------------------------------------------
-    # Session lifecycle
-    # ------------------------------------------------------------------
-
     async def start(self, config: dict) -> None:
         self._mode = config.get("mode", "one_way")
         self._context.clear()
         self._running = True
+        self._domain_context = ""
+        self._log = SessionLogger()
+        self._log.set_mode(self._mode)
+
+        # Extract domain context if user provided skill info
+        raw_domain = config.get("domain", "").strip()
+        if raw_domain:
+            await self._send({"type": "pipeline_status", "stage": "extracting_domain"})
+            t0 = time.perf_counter()
+            self._domain_context = await self._loop.run_in_executor(
+                None, extract_domain_context, raw_domain
+            )
+            ms = int((time.perf_counter() - t0) * 1000)
+            if self._log:
+                self._log.log_domain(raw_domain, self._domain_context, ms)
+            await self._send({
+                "type": "domain_extracted",
+                "context": self._domain_context,
+            })
+
+        self._reset_collection()
         self._open_streams()
+        self._pipeline_task = asyncio.create_task(self._run_pipeline())
         await self._send({"type": "session_started", "mode": self._mode})
 
     async def stop(self) -> None:
         self._running = False
-        if self._llm_task and not self._llm_task.done():
-            self._llm_task.cancel()
+        if self._pipeline_task and not self._pipeline_task.done():
+            self._pipeline_task.cancel()
         if self._mic_stream:
             self._mic_stream.close()
         if self._sys_stream:
             self._sys_stream.close()
         self._mic_stream = self._sys_stream = None
+        if self._log:
+            path = self._log.save()
+            await self._send({"type": "debug_log_saved", "path": path})
         await self._send({"type": "session_stopped"})
 
-    # ------------------------------------------------------------------
-    # Deepgram stream setup
-    # ------------------------------------------------------------------
-
-    def _open_streams(self) -> None:
-        if self._mode == "two_way":
-            # Single stream — audio always flows, label comes from _active_speaker at transcript time
-            self._mic_stream = DeepgramStream(
-                speaker_label="__dynamic__",
-                on_transcript=self._on_transcript_sync,
-                loop=self._loop,
-            )
-            self._mic_stream.open()
-        else:
-            # One-way: separate streams for mic (interviewee) and system audio (interviewer)
-            self._mic_stream = DeepgramStream(
-                speaker_label="interviewee",
-                on_transcript=self._on_transcript_sync,
-                loop=self._loop,
-            )
-            self._mic_stream.open()
-
-            self._sys_stream = DeepgramStream(
-                speaker_label="interviewer",
-                on_transcript=self._on_transcript_sync,
-                loop=self._loop,
-            )
-            self._sys_stream.open()
-
-    # ------------------------------------------------------------------
-    # Audio ingestion — called for every binary WebSocket message
-    # Binary format: byte[0] = channel (0=mic, 1=system), byte[1:] = PCM Int16
-    # ------------------------------------------------------------------
-
     async def handle_audio(self, data: bytes) -> None:
-        """Binary WebSocket message: byte[0]=channel, byte[1:]=PCM Int16."""
         if not self._running or len(data) < 2:
             return
-        channel = data[0]
-        pcm = data[1:]
-
+        channel, pcm = data[0], data[1:]
         if self._mode == "two_way":
-            # Single stream always receives audio — no idle/timeout risk
             if channel == 0 and self._mic_stream:
                 self._mic_stream.send(pcm)
         else:
@@ -108,83 +122,240 @@ class InterviewSession:
             elif channel == 1 and self._sys_stream:
                 self._sys_stream.send(pcm)
 
-    # ------------------------------------------------------------------
-    # Transcript handling
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
+    # Deepgram stream setup
+    # ──────────────────────────────────────────────────────────────────
+
+    def _open_streams(self) -> None:
+        if self._mode == "two_way":
+            self._mic_stream = DeepgramStream(
+                speaker_label="__dynamic__",
+                on_transcript=self._on_transcript_sync,
+                loop=self._loop,
+            )
+            self._mic_stream.open()
+        else:
+            self._mic_stream = DeepgramStream(
+                speaker_label="interviewee",
+                on_transcript=self._on_transcript_sync,
+                loop=self._loop,
+            )
+            self._mic_stream.open()
+            self._sys_stream = DeepgramStream(
+                speaker_label="interviewer",
+                on_transcript=self._on_transcript_sync,
+                loop=self._loop,
+            )
+            self._sys_stream.open()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Transcript ingestion
+    # ──────────────────────────────────────────────────────────────────
+
+    def _normalize(self, label: str) -> str:
+        return label if label in ("interviewer", "interviewee") else "interviewee"
 
     def _on_transcript_sync(self, speaker: str, text: str, is_final: bool) -> None:
-        # Two-way: single stream, label overridden by whoever is currently active
         effective = self._active_speaker if self._mode == "two_way" else speaker
         asyncio.run_coroutine_threadsafe(
-            self._handle_transcript(effective, text, is_final),
+            self._handle_transcript(self._normalize(effective), text, is_final),
             self._loop,
         )
 
     async def _handle_transcript(self, speaker: str, text: str, is_final: bool) -> None:
-        normalized = self._normalize_speaker(speaker)
+        if self._log:
+            self._log.log_transcript(speaker, text, is_final)
         await self._send({
             "type": "transcript_update",
-            "speaker": normalized,       # "interviewer" | "interviewee" — for display
-            "speaker_id": speaker,       # "speaker_0" | "speaker_1" — for role assignment
+            "speaker": speaker,
             "text": text,
             "is_final": is_final,
         })
 
-        if is_final:
-            if normalized == "interviewer":
-                self._context.add_interviewer(text)
-                await self._trigger_llm(text)
-            else:
-                self._context.add_interviewee(text)
+        if not is_final:
+            return
+
+        if speaker == "interviewer":
+            self._context.add_interviewer(text)
+            if self._state == _State.COLLECTING:
+                now = self._loop.time()
+                if not self._buffer_start_at:
+                    self._buffer_start_at = now
+                self._interviewer_buffer = (
+                    self._interviewer_buffer + " " + text
+                ).strip()
+                self._last_final_at = now
         else:
-            if normalized == "interviewer" and (
-                text.strip().endswith("?") or len(text.split()) >= 10
-            ):
-                await self._trigger_llm(text, is_partial=True)
+            self._context.add_interviewee(text)
 
-    # ------------------------------------------------------------------
-    # LLM suggestion streaming
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
+    # Pipeline state machine
+    # ──────────────────────────────────────────────────────────────────
 
-    async def _trigger_llm(self, question: str, is_partial: bool = False) -> None:
-        if self._llm_task and not self._llm_task.done():
-            self._llm_task.cancel()
+    def _reset_collection(self) -> None:
+        self._interviewer_buffer = ""
+        self._buffer_start_at    = 0.0
+        self._last_final_at      = 0.0
+        self._last_intent_at     = 0.0
+        self._state              = _State.COLLECTING
+
+    async def _run_pipeline(self) -> None:
+        await self._send({"type": "pipeline_status", "stage": "collecting"})
+        while self._running:
             try:
-                await self._llm_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._llm_task = asyncio.create_task(self._run_llm(question, is_partial))
+                if self._state == _State.COLLECTING:
+                    await self._collecting_tick()
 
-    async def _run_llm(self, question: str, is_partial: bool = False) -> None:
-        context_str = self._context.format_for_llm(question)
+                elif self._state == _State.COOLDOWN:
+                    await self._send({"type": "pipeline_status", "stage": "cooldown",
+                                      "seconds": int(COOLDOWN_DURATION)})
+                    await asyncio.sleep(COOLDOWN_DURATION)
+                    self._reset_collection()
+                    await self._send({"type": "pipeline_status", "stage": "collecting"})
+
+                else:  # PROCESSING — driven by _do_process
+                    await asyncio.sleep(0.1)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                await asyncio.sleep(0.5)
+
+    async def _collecting_tick(self) -> None:
+        words = self._interviewer_buffer.split()
+        if len(words) < MIN_WORDS_FOR_INTENT:
+            await asyncio.sleep(0.3)
+            return
+
+        now = self._loop.time()
+
+        # ── Trigger 1: speech gap ──────────────────────────────────
+        if self._last_final_at and (now - self._last_final_at) >= SPEECH_GAP_TRIGGER:
+            await self._intent_then_process("speech_gap")
+            return
+
+        # ── Trigger 2: periodic intent check ─────────────────────
+        since_intent = (now - self._last_intent_at) if self._last_intent_at else INTENT_CHECK_INTERVAL + 1
+        if since_intent >= INTENT_CHECK_INTERVAL:
+            self._last_intent_at = now
+            is_clear, buf, ms = await self._run_detect_intent("intent_check")
+            if is_clear:
+                await self._do_process("intent_check", is_clear, buf, ms)
+                return
+
+        # ── Trigger 3: fallback timeout ───────────────────────────
+        if self._buffer_start_at and (now - self._buffer_start_at) >= FALLBACK_TIMEOUT:
+            await self._do_process("fallback", intent=None)
+            return
+
+        await asyncio.sleep(0.3)
+
+    async def _intent_then_process(self, trigger: str) -> None:
+        is_clear, buf, ms = await self._run_detect_intent(trigger)
+        await self._do_process(trigger, is_clear, buf, ms)
+
+    async def _run_detect_intent(self, trigger: str) -> tuple[bool, str, int]:
+        """Returns (is_clear, buffer_used, duration_ms) — logging deferred to _do_process."""
+        buf = self._interviewer_buffer
+        await self._send({"type": "pipeline_status", "stage": "detecting_intent"})
+        t0 = time.perf_counter()
+        is_clear = await self._loop.run_in_executor(None, detect_intent, buf)
+        ms = int((time.perf_counter() - t0) * 1000)
+        return is_clear, buf, ms
+
+    async def _do_process(
+        self,
+        trigger: str,
+        is_clear: bool,
+        intent_buf: str = "",
+        intent_ms: int = 0,
+    ) -> None:
+        self._state = _State.PROCESSING
+        buffer = self._interviewer_buffer.strip()
+
+        if self._log:
+            self._log.start_cycle(trigger, buffer)
+            if trigger != "fallback":
+                self._log.log_intent(intent_buf or buffer, is_clear, intent_ms)
+
+        # ── Step 1: Rephrase raw buffer using context + domain ─────
+        await self._send({"type": "pipeline_status", "stage": "rephrasing"})
+        past = self._context.get_past_questions()
+
+        t0 = time.perf_counter()
+        question = await self._loop.run_in_executor(
+            None, rephrase_question, buffer, past, self._domain_context
+        )
+        ms = int((time.perf_counter() - t0) * 1000)
+
+        if self._log:
+            self._log.log_rephrase(buffer, past, self._domain_context, question, ms)
+
+        if not question:
+            if self._log:
+                self._log.end_cycle()
+            self._state = _State.COLLECTING
+            return
+
+        await self._send({"type": "question_formed", "question": question})
+
+        # ── Step 2: Stream answer ──────────────────────────────────
+        await self._send({"type": "pipeline_status", "stage": "answering"})
+        context_str = self._context.format_for_answer(question, self._domain_context)
+
         await self._send({
             "type": "llm_suggestion_update",
-            "text": "", "done": False, "reset": True, "is_partial": is_partial,
+            "text": "", "done": False, "reset": True,
         })
 
-        queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+        q: asyncio.Queue[Optional[str]] = asyncio.Queue()
+        answer_tokens: list[str] = []
+        t0 = time.perf_counter()
 
-        def producer() -> None:
+        def _produce() -> None:
             try:
-                for token in stream_tokens(context_str):
-                    self._loop.call_soon_threadsafe(queue.put_nowait, token)
+                for token in stream_tokens(context_str, has_domain=bool(self._domain_context)):
+                    self._loop.call_soon_threadsafe(q.put_nowait, token)
             except Exception as exc:
-                self._loop.call_soon_threadsafe(queue.put_nowait, f"\n\n[Error: {exc}]")
+                self._loop.call_soon_threadsafe(q.put_nowait, f"\n\n[Error: {exc}]")
             finally:
-                self._loop.call_soon_threadsafe(queue.put_nowait, None)
+                self._loop.call_soon_threadsafe(q.put_nowait, None)
 
-        threading.Thread(target=producer, daemon=True).start()
+        threading.Thread(target=_produce, daemon=True).start()
 
         try:
             while True:
-                token = await queue.get()
+                token = await q.get()
                 if token is None:
                     break
-                await self._send({"type": "llm_suggestion_update", "text": token, "done": False, "reset": False})
+                answer_tokens.append(token)
+                await self._send({
+                    "type": "llm_suggestion_update",
+                    "text": token, "done": False, "reset": False,
+                })
         except asyncio.CancelledError:
+            if self._log:
+                self._log.end_cycle()
             return
 
-        await self._send({"type": "llm_suggestion_update", "text": "", "done": True, "reset": False})
+        answer_ms = int((time.perf_counter() - t0) * 1000)
+        full_answer = "".join(answer_tokens)
+
+        if self._log:
+            self._log.log_answer(question, context_str, full_answer, answer_ms)
+            self._log.end_cycle()
+
+        await self._send({
+            "type": "llm_suggestion_update",
+            "text": "", "done": True, "reset": False,
+        })
+
+        self._context.add_answered(question)
+        self._state = _State.COOLDOWN
+
+    # ──────────────────────────────────────────────────────────────────
+    # Helpers
+    # ──────────────────────────────────────────────────────────────────
 
     async def _send(self, data: dict) -> None:
         try:

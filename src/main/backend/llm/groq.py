@@ -5,11 +5,11 @@ from .prompt import build_messages
 _client = Groq(api_key=GROQ_API_KEY)
 
 
-def stream_tokens(context_str: str):
+def stream_tokens(context_str: str, has_domain: bool = False):
     """Synchronous generator — run in a thread, not the event loop."""
     completion = _client.chat.completions.create(
         model=LLM_MODEL,
-        messages=build_messages(context_str),
+        messages=build_messages(context_str, has_domain=has_domain),
         temperature=LLM_TEMPERATURE,
         max_completion_tokens=LLM_MAX_TOKENS,
         top_p=1,

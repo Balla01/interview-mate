@@ -31,7 +31,7 @@ def info():
         "llm_model": LLM_MODEL,
         "deepgram_key_set": bool(DEEPGRAM_API_KEY),
         "groq_key_set": bool(GROQ_API_KEY),
-        "modes": ["one_way", "two_way"],
+        "modes": ["one_way (Online Call)", "two_way (In-Person Call)"],
         "audio_source": "browser (getUserMedia / getDisplayMedia)",
         "websocket": "ws://localhost:8000/ws",
         "events": {

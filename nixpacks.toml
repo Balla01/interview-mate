@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc", "portaudio"]
+
+[phases.install]
+cmds = ["pip install -r src/main/backend/requirements.txt"]
+
+[start]
+cmd = "cd src/main && uvicorn backend.main:app --host 0.0.0.0 --port $PORT"

@@ -45,7 +45,7 @@ export default function Header({
                   : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40'
               }`}
             >
-              {m === 'one_way' ? 'One-way' : 'Two-way'}
+              {m === 'one_way' ? 'Online Call' : 'In-Person Call'}
             </button>
           ))}
         </div>

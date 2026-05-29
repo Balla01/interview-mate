@@ -44,6 +44,14 @@ header{display:flex;align-items:center;justify-content:space-between;padding:0 1
 
 .warning{background:#451a03;border-bottom:1px solid #78350f;color:#fbbf24;font-size:.8rem;padding:.4rem 1.5rem;flex-shrink:0;display:none}
 
+/* Skill / Domain bar */
+.skill-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:.6rem 1.5rem;flex-shrink:0;display:flex;align-items:flex-start;gap:.75rem}
+.skill-label{font-size:.78rem;font-weight:600;color:var(--accent);white-space:nowrap;padding-top:.3rem}
+.skill-textarea{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:.78rem;font-family:inherit;padding:.4rem .7rem;resize:none;outline:none;line-height:1.45}
+.skill-textarea:focus{border-color:var(--accent)}
+.skill-hint{font-size:.68rem;color:var(--muted);white-space:nowrap;padding-top:.3rem;max-width:180px;line-height:1.4}
+.domain-banner{background:#0c1a1a;border-bottom:1px solid #134e4a;color:#5eead4;font-size:.75rem;padding:.35rem 1.5rem;flex-shrink:0}
+
 /* Two-way hint banner */
 .hint-banner{background:var(--surface2);border-bottom:1px solid var(--border);color:var(--dim);font-size:.78rem;padding:.35rem 1.5rem;flex-shrink:0;display:none}
 
@@ -72,6 +80,9 @@ main{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow:hidden}
 .assign-btn.interviewer-btn:hover{border-color:var(--interviewer);color:var(--interviewer)}
 .assign-btn.interviewee-btn:hover{border-color:var(--interviewee);color:var(--interviewee)}
 
+/* Detected question box */
+.question-box{background:#1e1b4b;border:1px solid #3730a3;border-radius:8px;padding:.55rem .9rem;font-size:.82rem;color:#a5b4fc;margin-bottom:.85rem;line-height:1.5}
+
 /* Suggestion */
 .sug-content{font-size:.92rem;line-height:1.7}
 .sug-content strong{color:var(--accent)}
@@ -94,8 +105,8 @@ main{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow:hidden}
     <div class="brand">🎧 InterviewMate</div>
     <div class="controls">
       <div class="mode-sel">
-        <button class="mode-btn active" id="btn-oneway">One-way</button>
-        <button class="mode-btn" id="btn-twoway">Two-way</button>
+        <button class="mode-btn active" id="btn-oneway">Online Call</button>
+        <button class="mode-btn" id="btn-twoway">In-Person Call</button>
       </div>
       <div class="status">
         <span class="dot" id="dot"></span>
@@ -111,8 +122,28 @@ main{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow:hidden}
     </div>
   </header>
   <div class="warning" id="warning"></div>
+
+  <!-- Skill / Domain input — visible only when session is idle -->
+  <div class="skill-bar" id="skill-bar">
+    <span class="skill-label">🎯 Skill / Domain</span>
+    <textarea
+      id="skill-input"
+      class="skill-textarea"
+      rows="2"
+      placeholder="Optional: describe your domain, tech stack, or interview focus.
+e.g. Backend engineer, 4 yrs Python + FastAPI + PostgreSQL. Interview focus: system design and microservices."
+    ></textarea>
+    <span class="skill-hint">Used to tailor suggestions and fix domain-specific transcription errors.</span>
+  </div>
+
+  <!-- Domain context confirmation — shown after extraction -->
+  <div class="domain-banner" id="domain-banner" style="display:none">
+    <span>✅ Domain context extracted — </span>
+    <span id="domain-preview"></span>
+  </div>
+
   <div class="hint-banner" id="hint-banner">
-    💡 <strong>Two-way mode:</strong> Click <strong>"Now Talking"</strong> in the header to switch who is speaking <em>before</em> each turn.
+    💡 <strong>In-Person Call mode:</strong> Click <strong>"Now Talking"</strong> in the header to switch who is speaking <em>before</em> each turn.
     Default is <strong>Interviewer</strong>. Switch to <strong>You</strong> when you start answering, then switch back when the interviewer speaks again.
   </div>
   <main>
@@ -155,6 +186,8 @@ const dot=$('dot'), statusTxt=$('status-txt')
 const transcriptEl=$('transcript'), suggestionsEl=$('suggestions')
 const micLive=$('mic-live'), sdot=$('sdot'), warningEl=$('warning')
 const hintBanner=$('hint-banner')
+const skillBar=$('skill-bar'), skillInput=$('skill-input')
+const domainBanner=$('domain-banner'), domainPreview=$('domain-preview')
 
 // ── Mode ─────────────────────────────────────────────────
 btnOneway.onclick = () => { if (!running) { mode='one_way'; updateModeUI() } }
@@ -181,7 +214,18 @@ function sendBin(buf)  { if (ws?.readyState===1) ws.send(buf) }
 function onMessage(e) {
   const msg = JSON.parse(e.data)
 
-  if (msg.type === 'session_started') {
+  if (msg.type === 'pipeline_status' && msg.stage === 'extracting_domain') {
+    btnMain.textContent = '⏳ Extracting domain…'
+    btnMain.disabled = true
+  }
+
+  else if (msg.type === 'domain_extracted') {
+    domainBanner.style.display = 'block'
+    domainPreview.textContent = msg.context.split('\n')[0]  // show first line
+    btnMain.disabled = false
+  }
+
+  else if (msg.type === 'session_started') {
     transcriptEl.innerHTML = ''
     suggestionsEl.innerHTML = ''
     suggestion = ''
@@ -191,10 +235,10 @@ function onMessage(e) {
     btnSys.textContent = '🔊 Add System Audio'
     btnSys.disabled = false
     btnSys.classList.remove('on')
-    // Show speaker toggle only in two-way mode
     btnSpeaker.style.display = (mode==='two_way') ? 'inline-flex' : 'none'
     updateSpeakerBtn('interviewer')
     hintBanner.style.display = (mode==='two_way') ? 'block' : 'none'
+    skillBar.style.display = 'none'   // hide skill input during session
     warn('')
   }
 
@@ -206,6 +250,7 @@ function onMessage(e) {
     btnSpeaker.style.display = 'none'
     micLive.style.display = 'none'
     hintBanner.style.display = 'none'
+    skillBar.style.display = 'flex'   // restore skill input
     stopAudio()
   }
 
@@ -218,15 +263,25 @@ function onMessage(e) {
     updateSpeakerBtn(msg.active)
   }
 
+  else if (msg.type === 'pipeline_status') {
+    updatePipelineStatus(msg.stage, msg.seconds)
+  }
+
+  else if (msg.type === 'question_formed') {
+    const qb = $('question-box')
+    if (qb) { qb.textContent = '📌 ' + msg.question; qb.style.display = 'block' }
+  }
+
   else if (msg.type === 'llm_suggestion_update') {
     if (msg.reset) {
       suggestion = ''
-      suggestionsEl.innerHTML = '<div id="sw" class="sug-content"></div>'
+      suggestionsEl.innerHTML = '<div id="question-box" class="question-box" style="display:none"></div><div id="sw" class="sug-content"></div>'
       sdot.style.display = 'inline-block'
     } else if (msg.done) {
       sdot.style.display = 'none'
       const sw = $('sw')
       if (sw) sw.innerHTML = md(suggestion)
+      updatePipelineStatus('cooldown')
     } else {
       suggestion += msg.text
       const sw = $('sw')
@@ -236,6 +291,29 @@ function onMessage(e) {
       }
     }
   }
+}
+
+// ── Pipeline status ───────────────────────────────────────
+const STATUS_LABELS = {
+  collecting:       '🎤 Listening…',
+  detecting_intent: '🔍 Detecting intent…',
+  rephrasing:       '🔄 Rephrasing question…',
+  answering:        '💡 Generating answer…',
+  cooldown:         '⏱ Cooldown…',
+}
+
+function updatePipelineStatus(stage, seconds) {
+  const titleEl = document.querySelector('.panel-title')
+  if (!titleEl) return
+  const label = STATUS_LABELS[stage] || stage
+  let extra = document.getElementById('pipeline-status-label')
+  if (!extra) {
+    extra = document.createElement('span')
+    extra.id = 'pipeline-status-label'
+    extra.style.cssText = 'font-size:.7rem;font-weight:500;color:var(--dim);margin-left:auto;text-transform:none;letter-spacing:0'
+    titleEl.appendChild(extra)
+  }
+  extra.textContent = seconds ? `${label} ${seconds}s` : label
 }
 
 // ── Speaker toggle ────────────────────────────────────────
@@ -369,7 +447,7 @@ btnMain.onclick = async () => {
         ws.onmessage = onMessage
       })
     }
-    sendJSON({ type: 'start_session', mode })
+    sendJSON({ type: 'start_session', mode, domain: skillInput?.value.trim() || '' })
     await startMic()
     running = true
     btnMain.textContent = '■ Stop Listening'; btnMain.className = 'btn btn-stop'

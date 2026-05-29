@@ -14,17 +14,17 @@ export default function Controls({
           className={`mode-btn ${mode === 'one_way' ? 'active' : ''}`}
           onClick={() => !isRunning && onModeChange('one_way')}
           disabled={isRunning}
-          title="Mic + system audio (online interview)"
+          title="Mic + system audio (online call)"
         >
-          One-way
+          Online Call
         </button>
         <button
           className={`mode-btn ${mode === 'two_way' ? 'active' : ''}`}
           onClick={() => !isRunning && onModeChange('two_way')}
           disabled={isRunning}
-          title="Single mic with speaker diarization (in-person)"
+          title="Single mic, manual speaker toggle (in-person)"
         >
-          Two-way
+          In-Person Call
         </button>
       </div>
 

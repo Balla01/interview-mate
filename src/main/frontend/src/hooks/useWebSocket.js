@@ -2,15 +2,18 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws'
 
-export function useWebSocket() {
-  const wsRef = useRef(null)
-  const [wsState, setWsState]           = useState('disconnected')
-  const [sessionStatus, setSession]     = useState('idle')
-  const [transcript, setTranscript]     = useState([])
-  const [partials, setPartials]         = useState({})
-  const [suggestion, setSuggestion]     = useState('')
-  const [suggestionDone, setSugDone]    = useState(true)
-  const [activeSpeaker, setActive]      = useState('interviewer')
+export function useWebSocket({ onDomainExtracted } = {}) {
+  const wsRef              = useRef(null)
+  const onDomainExtractedRef = useRef(onDomainExtracted)
+  onDomainExtractedRef.current = onDomainExtracted   // always latest, no dep needed
+
+  const [wsState, setWsState]       = useState('disconnected')
+  const [sessionStatus, setSession] = useState('idle')
+  const [transcript, setTranscript] = useState([])
+  const [partials, setPartials]     = useState({})
+  const [suggestion, setSuggestion] = useState('')
+  const [suggestionDone, setSugDone]= useState(true)
+  const [activeSpeaker, setActive]  = useState('interviewer')
   const idRef = useRef(0)
 
   const connect = useCallback(() => {
@@ -25,6 +28,9 @@ export function useWebSocket() {
       ws.onmessage = ({ data }) => {
         const msg = JSON.parse(data)
         switch (msg.type) {
+          case 'domain_extracted':
+            onDomainExtractedRef.current?.(msg.context)
+            break
           case 'session_started':
             setSession('running')
             setTranscript([]); setPartials({})
@@ -58,15 +64,15 @@ export function useWebSocket() {
     })
   }, [])
 
-  const sendJSON   = useCallback(obj  => wsRef.current?.readyState === 1 && wsRef.current.send(JSON.stringify(obj)), [])
-  const sendBinary = useCallback(buf  => wsRef.current?.readyState === 1 && wsRef.current.send(buf), [])
+  const sendJSON    = useCallback(obj => wsRef.current?.readyState === 1 && wsRef.current.send(JSON.stringify(obj)), [])
+  const sendBinary  = useCallback(buf => wsRef.current?.readyState === 1 && wsRef.current.send(buf), [])
 
-  const startSession = useCallback(async mode => {
+  const startSession = useCallback(async (mode, domain = '') => {
     await connect()
-    sendJSON({ type: 'start_session', mode })
+    sendJSON({ type: 'start_session', mode, domain })
   }, [connect, sendJSON])
 
-  const stopSession  = useCallback(() => sendJSON({ type: 'stop_session' }), [sendJSON])
+  const stopSession   = useCallback(() => sendJSON({ type: 'stop_session' }), [sendJSON])
   const switchSpeaker = useCallback(() => {
     sendJSON({ type: 'switch_speaker' })
     setActive(p => p === 'interviewer' ? 'interviewee' : 'interviewer')
