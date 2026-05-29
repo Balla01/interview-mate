@@ -1,15 +1,8 @@
 import { useEffect, useRef } from 'react'
 
-const SPEAKER_LABELS = {
+const SPEAKER_NAMES = {
   interviewer: 'Interviewer',
   interviewee: 'You',
-  speaker_0: 'Speaker A',
-  speaker_1: 'Speaker B',
-  unknown: 'Speaker',
-}
-
-function label(speaker) {
-  return SPEAKER_LABELS[speaker] ?? speaker
 }
 
 export default function TranscriptPanel({ transcript, partials }) {
@@ -19,33 +12,51 @@ export default function TranscriptPanel({ transcript, partials }) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [transcript, partials])
 
-  const activeSpeakers = Object.keys(partials).filter(s => partials[s])
+  const isEmpty = transcript.length === 0 && Object.keys(partials).length === 0
 
   return (
-    <section className="panel transcript-panel">
-      <h2 className="panel-title">Live Transcript</h2>
+    <section className="flex flex-col w-[42%] min-w-[280px] overflow-hidden border-r border-zinc-800">
+      {/* Panel header */}
+      <div className="flex items-center gap-2 px-5 py-3 border-b border-zinc-800 flex-shrink-0">
+        <h2 className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+          Live Transcript
+        </h2>
+      </div>
 
-      <div className="transcript-body">
-        {transcript.length === 0 && activeSpeakers.length === 0 && (
-          <p className="empty-hint">Transcript will appear here once listening starts…</p>
+      {/* Scrollable content */}
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        {isEmpty ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+            <div className="text-4xl opacity-20">🎙</div>
+            <p className="text-sm text-zinc-600 italic">
+              Transcript will appear here once listening starts…
+            </p>
+          </div>
+        ) : (
+          <>
+            {transcript.map(turn => (
+              <TurnCard key={turn.id} speaker={turn.speaker} text={turn.text} />
+            ))}
+
+            {Object.entries(partials).map(([speaker, text]) => (
+              <TurnCard key={`p-${speaker}`} speaker={speaker} text={text} partial />
+            ))}
+          </>
         )}
-
-        {transcript.map(turn => (
-          <div key={turn.id} className={`turn turn-${turn.speaker}`}>
-            <span className="turn-label">{label(turn.speaker)}</span>
-            <p className="turn-text">{turn.text}</p>
-          </div>
-        ))}
-
-        {activeSpeakers.map(speaker => (
-          <div key={`partial-${speaker}`} className={`turn turn-${speaker} partial`}>
-            <span className="turn-label">{label(speaker)}</span>
-            <p className="turn-text">{partials[speaker]}</p>
-          </div>
-        ))}
-
         <div ref={bottomRef} />
       </div>
     </section>
+  )
+}
+
+function TurnCard({ speaker, text, partial = false }) {
+  return (
+    <div className={`turn-card ${speaker} ${partial ? 'partial' : ''}`}>
+      <span className="speaker-label">
+        {SPEAKER_NAMES[speaker] ?? speaker}
+        {partial && <span className="ml-2 font-normal normal-case tracking-normal text-zinc-500">typing…</span>}
+      </span>
+      <p className="text-sm text-zinc-200 leading-relaxed">{text}</p>
+    </div>
   )
 }

@@ -1,9 +1,9 @@
-import { useState } from 'react'
-import Controls from './components/Controls'
+import Header from './components/Header'
 import TranscriptPanel from './components/TranscriptPanel'
 import SuggestionsPanel from './components/SuggestionsPanel'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useAudio } from './hooks/useAudio'
+import { useState } from 'react'
 
 export default function App() {
   const [mode, setMode] = useState('one_way')
@@ -12,13 +12,11 @@ export default function App() {
     wsState, sessionStatus,
     transcript, partials,
     suggestion, suggestionDone,
-    startSession, stopSession, sendBinary,
+    activeSpeaker,
+    startSession, stopSession, switchSpeaker, sendBinary,
   } = useWebSocket()
 
-  const {
-    micActive, sysActive, error,
-    startMic, startSystemAudio, stopAll,
-  } = useAudio(sendBinary)
+  const { micActive, sysActive, audioError, startMic, startSystemAudio, stopAll } = useAudio(sendBinary)
 
   const handleStart = async () => {
     await startSession(mode)
@@ -31,28 +29,37 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <div className="brand">
-          <span className="brand-icon">🎧</span>
-          <h1 className="brand-name">InterviewMate</h1>
+    <div className="flex flex-col h-screen bg-zinc-950 select-none">
+      <Header
+        mode={mode}
+        onModeChange={setMode}
+        wsState={wsState}
+        sessionStatus={sessionStatus}
+        micActive={micActive}
+        sysActive={sysActive}
+        activeSpeaker={activeSpeaker}
+        onStart={handleStart}
+        onStop={handleStop}
+        onSystemAudio={startSystemAudio}
+        onSwitchSpeaker={switchSpeaker}
+      />
+
+      {/* Two-way hint */}
+      {sessionStatus === 'running' && mode === 'two_way' && (
+        <div className="bg-indigo-950/50 border-b border-indigo-900/50 px-5 py-1.5 text-xs text-indigo-300 flex-shrink-0">
+          💡 Click <strong>Now: …</strong> in the header to switch who is speaking before each turn.
         </div>
-        <Controls
-          mode={mode}
-          onModeChange={setMode}
-          sessionStatus={sessionStatus}
-          wsState={wsState}
-          micActive={micActive}
-          sysActive={sysActive}
-          onStart={handleStart}
-          onStop={handleStop}
-          onSystemAudio={startSystemAudio}
-        />
-      </header>
+      )}
 
-      {error && <div className="warning-banner">⚠ {error}</div>}
+      {/* Audio error */}
+      {audioError && (
+        <div className="bg-amber-950/60 border-b border-amber-900/50 px-5 py-1.5 text-xs text-amber-300 flex-shrink-0">
+          ⚠ {audioError}
+        </div>
+      )}
 
-      <main className="app-main">
+      {/* Main panels */}
+      <main className="flex flex-1 overflow-hidden">
         <TranscriptPanel transcript={transcript} partials={partials} />
         <SuggestionsPanel suggestion={suggestion} done={suggestionDone} />
       </main>

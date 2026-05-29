@@ -3,36 +3,28 @@ import { useRef, useState, useCallback } from 'react'
 const SAMPLE_RATE = 16000
 const BUFFER_SIZE = 4096
 
-function float32ToInt16WithChannel(float32, channel) {
-  // Binary format: byte[0]=channel, byte[1..]=PCM Int16 LE
-  const int16 = new Int16Array(float32.length)
-  for (let i = 0; i < float32.length; i++) {
-    int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768))
-  }
-  const out = new Uint8Array(1 + int16.byteLength)
-  out[0] = channel
-  out.set(new Uint8Array(int16.buffer), 1)
-  return out.buffer
-}
-
 function buildProcessor(stream, channel, onChunk) {
-  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE })
-  const source = ctx.createMediaStreamSource(stream)
-  // ScriptProcessorNode is deprecated but universally supported
-  const processor = ctx.createScriptProcessor(BUFFER_SIZE, 1, 1)
-  processor.onaudioprocess = (e) => {
-    onChunk(float32ToInt16WithChannel(e.inputBuffer.getChannelData(0), channel))
+  const ctx  = new AudioContext({ sampleRate: SAMPLE_RATE })
+  const src  = ctx.createMediaStreamSource(stream)
+  const proc = ctx.createScriptProcessor(BUFFER_SIZE, 1, 1)
+  proc.onaudioprocess = e => {
+    const f   = e.inputBuffer.getChannelData(0)
+    const i16 = new Int16Array(f.length)
+    for (let i = 0; i < f.length; i++) i16[i] = Math.max(-32768, Math.min(32767, f[i] * 32768))
+    const out = new Uint8Array(1 + i16.byteLength)
+    out[0] = channel
+    out.set(new Uint8Array(i16.buffer), 1)
+    onChunk(out.buffer)
   }
-  source.connect(processor)
-  processor.connect(ctx.destination)
-  return { ctx, processor, source }
+  src.connect(proc)
+  proc.connect(ctx.destination)
+  return { ctx, proc, src, stream }
 }
 
 export function useAudio(onChunk) {
   const [micActive, setMicActive] = useState(false)
   const [sysActive, setSysActive] = useState(false)
-  const [error, setError] = useState(null)
-
+  const [audioError, setError]    = useState(null)
   const micRef = useRef(null)
   const sysRef = useRef(null)
 
@@ -40,65 +32,34 @@ export function useAudio(onChunk) {
     try {
       setError(null)
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true },
+        audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true },
       })
       micRef.current = buildProcessor(stream, 0, onChunk)
-      micRef.current.stream = stream
       setMicActive(true)
-    } catch (err) {
-      setError(`Microphone: ${err.message}`)
-    }
+    } catch (e) { setError('Microphone: ' + e.message) }
   }, [onChunk])
 
   const startSystemAudio = useCallback(async () => {
     try {
       setError(null)
-      // getDisplayMedia captures tab/window/screen audio
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        audio: true,
-        video: { width: 1, height: 1 },
-      })
-      // Drop the video track immediately — we only need audio
+      const stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: { width: 1, height: 1 } })
       stream.getVideoTracks().forEach(t => t.stop())
-      const audioTracks = stream.getAudioTracks()
-      if (!audioTracks.length) {
-        throw new Error('No audio track — make sure to check "Share audio" in the prompt')
-      }
-      const audioStream = new MediaStream(audioTracks)
-      sysRef.current = buildProcessor(audioStream, 1, onChunk)
-      sysRef.current.stream = audioStream
-      // Auto-stop when user ends screen share
-      audioTracks[0].addEventListener('ended', stopSystemAudio)
+      const tracks = stream.getAudioTracks()
+      if (!tracks.length) throw new Error('No audio — check "Share audio" in the browser prompt')
+      sysRef.current = buildProcessor(new MediaStream(tracks), 1, onChunk)
       setSysActive(true)
-    } catch (err) {
-      setError(`System audio: ${err.message}`)
-    }
+      tracks[0].addEventListener('ended', () => { sysRef.current = null; setSysActive(false) })
+    } catch (e) { setError('System audio: ' + e.message) }
   }, [onChunk])
 
-  const stopMic = useCallback(() => {
-    if (micRef.current) {
-      micRef.current.processor?.disconnect()
-      micRef.current.ctx?.close()
-      micRef.current.stream?.getTracks().forEach(t => t.stop())
-      micRef.current = null
-    }
-    setMicActive(false)
-  }, [])
-
-  const stopSystemAudio = useCallback(() => {
-    if (sysRef.current) {
-      sysRef.current.processor?.disconnect()
-      sysRef.current.ctx?.close()
-      sysRef.current.stream?.getTracks().forEach(t => t.stop())
-      sysRef.current = null
-    }
-    setSysActive(false)
-  }, [])
-
   const stopAll = useCallback(() => {
-    stopMic()
-    stopSystemAudio()
-  }, [stopMic, stopSystemAudio])
+    [micRef, sysRef].forEach(r => {
+      if (!r.current) return
+      try { r.current.proc.disconnect(); r.current.ctx.close(); r.current.stream.getTracks().forEach(t => t.stop()) } catch (_) {}
+      r.current = null
+    })
+    setMicActive(false); setSysActive(false)
+  }, [])
 
-  return { micActive, sysActive, error, startMic, startSystemAudio, stopAll }
+  return { micActive, sysActive, audioError, startMic, startSystemAudio, stopAll }
 }
