@@ -90,7 +90,7 @@ class InterviewSession:
                 "context": self._domain_context,
             })
 
-        self._reset_collection()
+        self._reset_collection(clear_buffer=True)
         self._open_streams()
         self._pipeline_task = asyncio.create_task(self._run_pipeline())
         await self._send({"type": "session_started", "mode": self._mode})
@@ -177,14 +177,15 @@ class InterviewSession:
 
         if speaker == "interviewer":
             self._context.add_interviewer(text)
-            if self._state == _State.COLLECTING:
-                now = self._loop.time()
-                if not self._buffer_start_at:
-                    self._buffer_start_at = now
-                self._interviewer_buffer = (
-                    self._interviewer_buffer + " " + text
-                ).strip()
-                self._last_final_at = now
+            # Always buffer regardless of pipeline state —
+            # speech during PROCESSING/COOLDOWN is kept so it triggers on next cycle
+            now = self._loop.time()
+            if not self._buffer_start_at:
+                self._buffer_start_at = now
+            self._interviewer_buffer = (
+                self._interviewer_buffer + " " + text
+            ).strip()
+            self._last_final_at = now
         else:
             self._context.add_interviewee(text)
 
@@ -192,12 +193,20 @@ class InterviewSession:
     # Pipeline state machine
     # ──────────────────────────────────────────────────────────────────
 
-    def _reset_collection(self) -> None:
-        self._interviewer_buffer = ""
-        self._buffer_start_at    = 0.0
-        self._last_final_at      = 0.0
-        self._last_intent_at     = 0.0
-        self._state              = _State.COLLECTING
+    def _reset_collection(self, clear_buffer: bool = False) -> None:
+        if clear_buffer:
+            # Full reset — used on session start only
+            self._interviewer_buffer = ""
+            self._buffer_start_at    = 0.0
+            self._last_final_at      = 0.0
+        else:
+            # After cooldown — keep any speech that arrived during processing/cooldown
+            # Only reset the intent check timer
+            if not self._interviewer_buffer:
+                self._buffer_start_at = 0.0
+                self._last_final_at   = 0.0
+        self._last_intent_at = 0.0
+        self._state          = _State.COLLECTING
 
     async def _run_pipeline(self) -> None:
         await self._send({"type": "pipeline_status", "stage": "collecting"})
@@ -222,30 +231,34 @@ class InterviewSession:
                 await asyncio.sleep(0.5)
 
     async def _collecting_tick(self) -> None:
-        words = self._interviewer_buffer.split()
-        if len(words) < MIN_WORDS_FOR_INTENT:
+        buffer = self._interviewer_buffer.strip()
+
+        # Nothing collected yet — just wait
+        if not buffer:
             await asyncio.sleep(0.3)
             return
 
-        now = self._loop.time()
+        words = buffer.split()
+        now   = self._loop.time()
 
-        # ── Trigger 1: speech gap ──────────────────────────────────
+        # ── Trigger 1: speech gap (any buffer size, 2s silence) ───
         if self._last_final_at and (now - self._last_final_at) >= SPEECH_GAP_TRIGGER:
             await self._intent_then_process("speech_gap")
             return
 
-        # ── Trigger 2: periodic intent check ─────────────────────
-        since_intent = (now - self._last_intent_at) if self._last_intent_at else INTENT_CHECK_INTERVAL + 1
-        if since_intent >= INTENT_CHECK_INTERVAL:
-            self._last_intent_at = now
-            is_clear, buf, ms = await self._run_detect_intent("intent_check")
-            if is_clear:
-                await self._do_process("intent_check", is_clear, buf, ms)
-                return
+        # ── Trigger 2: intent check (≥5 words, every 3s) ──────────
+        if len(words) >= MIN_WORDS_FOR_INTENT:
+            since_intent = (now - self._last_intent_at) if self._last_intent_at else INTENT_CHECK_INTERVAL + 1
+            if since_intent >= INTENT_CHECK_INTERVAL:
+                self._last_intent_at = now
+                is_clear, buf, ms = await self._run_detect_intent("intent_check")
+                if is_clear:
+                    await self._do_process("intent_check", is_clear, buf, ms)
+                    return
 
-        # ── Trigger 3: fallback timeout ───────────────────────────
+        # ── Trigger 3: fallback (any buffer size, 5s elapsed) ─────
         if self._buffer_start_at and (now - self._buffer_start_at) >= FALLBACK_TIMEOUT:
-            await self._do_process("fallback", intent=None)
+            await self._do_process("fallback", is_clear=False)
             return
 
         await asyncio.sleep(0.3)
@@ -272,6 +285,12 @@ class InterviewSession:
     ) -> None:
         self._state = _State.PROCESSING
         buffer = self._interviewer_buffer.strip()
+
+        # Clear buffer immediately — new speech during processing accumulates fresh
+        self._interviewer_buffer = ""
+        self._buffer_start_at    = 0.0
+        self._last_final_at      = 0.0
+        self._last_intent_at     = 0.0
 
         if self._log:
             self._log.start_cycle(trigger, buffer)

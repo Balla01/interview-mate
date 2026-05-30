@@ -3,27 +3,84 @@ from ..config import GROQ_API_KEY
 
 _client = Groq(api_key=GROQ_API_KEY)
 
-_SYSTEM = """You are a technical interview coach helping clarify interview questions.
+_SYSTEM = """You are a question clarifier for a live interview assistant.
 
-You receive:
-  - RAW QUESTION: the exact words spoken by the interviewer (speech transcript, may have errors)
-  - PAST QUESTIONS: previous questions in this interview, listed oldest → most recent
-    (most recent = highest priority for resolving references)
-  - DOMAIN CONTEXT (optional): candidate's skill/domain background
+Your only job: take the raw transcribed question and output a single clean, complete, standalone question sentence.
 
-Your job — produce ONE clean, self-contained interview question:
+════════════════════════════════════════════════
+STRICT RULES
+════════════════════════════════════════════════
 
-STEP 1 — Decide if the raw question is self-contained:
-  - Self-contained: "What is dependency injection?" → rephrase as-is, ignore past questions
-  - Dependent: "What is the difference between them?" / "Where have you used it?" →
-    resolve the reference using past questions (most recent first)
+RULE 1 — Preserve the topic exactly.
+  The topic in the raw question MUST appear in your output.
+  Never replace or swap the topic with anything from past questions.
 
-STEP 2 — Apply domain correction (ONLY if domain context is provided):
-  - If a word looks like a mis-transcription of a known domain term and you are 100% confident
-    of the correction → fix it (e.g. "MCB" → "MCP" if domain is AI tooling)
-  - If you are not 100% confident → leave the word unchanged
+  ✗ WRONG: raw="Can you tell me about quantization"  →  output="Fine-tuning of LLMs."
+  ✓ RIGHT: raw="Can you tell me about quantization"  →  output="Can you explain what quantization is?"
 
-STEP 3 — Output only the rephrased question. No explanation, no prefix, no quotes."""
+RULE 2 — Detect if the question is self-contained or dependent.
+
+  SELF-CONTAINED: the question has a clear, complete topic on its own.
+    → Do NOT use past questions. Just clean up grammar and make it a proper sentence.
+
+    Examples:
+      raw="What is a binary search tree"
+      output="What is a binary search tree and how does it work?"
+
+      raw="Can you explain load balancing"
+      output="Can you explain what load balancing is and why it is used?"
+
+      raw="Tell me about caching strategies"
+      output="Can you describe common caching strategies and their trade-offs?"
+
+  DEPENDENT: the question contains a pronoun or reference with no clear target.
+    Trigger words: it, them, they, that, this, the same, the previous, the difference, those, these
+    → Use past questions to resolve the reference. Most recent past question = highest priority.
+
+    Examples:
+      past=[..., "stack", "queue"]  (queue is most recent)
+      raw="What is the difference between them?"
+      output="What is the difference between a stack and a queue?"
+
+      past=[..., "lazy loading"]  (most recent)
+      raw="Where would you use it?"
+      output="Where would you use lazy loading in a real application?"
+
+      past=[..., "REST APIs", "GraphQL"]  (GraphQL is most recent)
+      raw="When should you prefer one over the other?"
+      output="When should you prefer GraphQL over REST APIs?"
+
+RULE 3 — Output must always be a proper question sentence.
+  Never output just a topic phrase or fragment.
+  ✗ WRONG: "Fine-tuning of LLMs."
+  ✗ WRONG: "Quantization."
+  ✓ RIGHT: "Can you explain what quantization is and how it differs from fine-tuning?"
+
+RULE 4 — Do NOT correct spelling or terminology. Output exactly what the speaker meant.
+
+RULE 5 — Output only the final question. No explanation, no prefix, no quotes.
+
+════════════════════════════════════════════════
+PAST QUESTIONS WEIGHTING (when needed for DEPENDENT questions only)
+════════════════════════════════════════════════
+  Q[most recent]     → resolve first
+  Q[second recent]   → use if most recent does not resolve the reference
+  Q[older]           → only if both above fail
+  Ignore past questions entirely for SELF-CONTAINED questions."""
+
+
+_DEPENDENCY_WORDS = {
+    "it", "its", "them", "they", "their", "that", "this",
+    "those", "these", "same", "previous", "earlier", "before",
+    "difference", "similar", "comparison", "both", "either",
+    "one", "other", "another", "latter", "former",
+}
+
+
+def _is_dependent(text: str) -> bool:
+    """True if the question contains pronouns/references that need past context."""
+    words = set(text.lower().split())
+    return bool(words & _DEPENDENCY_WORDS)
 
 
 def rephrase_question(
@@ -33,26 +90,27 @@ def rephrase_question(
 ) -> str:
     """
     Synchronous — run via loop.run_in_executor.
-    Returns rephrased question. Falls back to raw buffer on error.
+    Returns rephrased complete question. Falls back to raw buffer on error.
     """
-    # Build recency-weighted past questions block
-    if past_questions:
-        past_block = "PAST QUESTIONS (oldest → most recent, most recent = highest priority):\n"
-        for i, q in enumerate(past_questions, 1):
-            weight = "highest priority" if i == len(past_questions) else (
-                "high priority" if i == len(past_questions) - 1 else "lower priority"
-            )
-            past_block += f"  {i}. [{weight}] {q}\n"
+    dependent = _is_dependent(buffer)
+
+    # Only send past questions when the question actually needs them
+    if dependent and past_questions:
+        past_lines = []
+        n = len(past_questions)
+        for i, q in enumerate(past_questions):
+            if i == n - 1:
+                tag = "[MOST RECENT — highest priority]"
+            elif i == n - 2:
+                tag = "[second most recent]"
+            else:
+                tag = "[older]"
+            past_lines.append(f"  {tag} {q}")
+        past_block = "PAST QUESTIONS:\n" + "\n".join(past_lines)
     else:
-        past_block = "PAST QUESTIONS: none\n"
+        past_block = "PAST QUESTIONS: none (question is self-contained — do not use any past context)"
 
-    domain_block = (
-        f"\nDOMAIN CONTEXT:\n{domain_context}\n"
-        if domain_context
-        else "\nDOMAIN CONTEXT: not provided\n"
-    )
-
-    user_msg = f"RAW QUESTION: {buffer}\n\n{past_block}{domain_block}"
+    user_msg = f"RAW QUESTION: {buffer}\n\n{past_block}"
 
     try:
         resp = _client.chat.completions.create(
@@ -61,10 +119,14 @@ def rephrase_question(
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user",   "content": user_msg},
             ],
-            temperature=0.2,
+            temperature=0.0,
             max_completion_tokens=120,
             stream=False,
         )
-        return resp.choices[0].message.content.strip()
+        result = resp.choices[0].message.content.strip()
+        # Safety: if output looks like a fragment (no verb, very short), fall back
+        if result and len(result.split()) >= 4:
+            return result
+        return buffer
     except Exception:
-        return buffer  # graceful fallback
+        return buffer
