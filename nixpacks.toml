@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python311", "gcc", "portaudio"]
+nixPkgs = ["python311Full", "gcc", "portaudio"]
 
 [phases.install]
 cmds = ["pip install -r src/main/backend/requirements.txt"]
